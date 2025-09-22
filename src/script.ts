@@ -373,28 +373,44 @@ function init(): void {
   )
   composer.addPass(bloomPass)
 
-  // Create controls with comprehensive 6DOF camera freedom
+  // Create controls optimized for touchpad interaction
   controls = new OrbitControls(camera, canvas)
 
-  // Enable all movement axes
+  // Enable all movement axes with touchpad-optimized settings
   controls.enableRotate = true         // Orbital rotation around target
-  controls.enableZoom = true           // Zoom in/out with scroll wheel/two-finger pinch
+  controls.enableZoom = true           // Zoom in/out with two-finger gestures on touchpad
   controls.enablePan = true            // Pan camera position horizontally/vertically
 
-  // Smooth motion control
-  controls.enableDamping = true        // Enable smooth, physics-based camera movement
-  controls.dampingFactor = 0.08        // Increased damping for smoother, more natural feel
+  // Damping and responsiveness specifically tuned for touchpad control
+  controls.enableDamping = true        // Enable smooth motion physics
+  controls.dampingFactor = 0.15        // Higher damping (smoother) for touchpad gesture feel
 
-  // Movement boundaries and behavior
-  controls.screenSpacePanning = false  // Orbit around world space (not screen space)
-  controls.minDistance = 0.5           // Allow very close zoom to black hole
-  controls.maxDistance = 1000000       // Effectively unlimited zoom out
-  controls.maxPolarAngle = Math.PI     // Full 360° vertical rotation capability
-  controls.minPolarAngle = 0           // Can rotate fully above and below
+  // Adjust control sensitivities for touchpad operation
+  controls.rotateSpeed = 0.8           // Balanced rotation speed for touchpad dragging
+  controls.panSpeed = 1.0              // Normal pan speed for touchpad interaction
+  controls.zoomSpeed = 1.2             // Responsive zoom for touchpad scroll/two-finger
 
-  // Orbit target and centering
-  controls.target.set(0, 0, 0)         // Orbit center at black hole position
-  controls.update()                    // Force initial update to set correct orientation
+  // Movement boundaries for comprehensive exploration
+  controls.screenSpacePanning = true   // Screen-space panning for intuitive movement
+  controls.minDistance = 0.1           // Very close inspection capability
+  controls.maxDistance = 2000000       // Essentially unlimited zoom out
+  controls.maxPolarAngle = Math.PI     // Full 360° vertical rotation (pole to pole)
+  controls.minPolarAngle = 0           // Complete coverage from above to below
+
+  // Precise centering on black hole for consistent orientation
+  controls.target.set(0, 0, 0)         // Target black hole center (0,0,0)
+
+  // Ensure controls are properly initialized for touchpad
+  controls.update()                    // Initial orientation setup
+
+  // Enable touch gestures (especially important for touchpad compatibility)
+  controls.touches = {
+    ONE: THREE.TOUCH.ROTATE,      // Single finger drag for rotation
+    TWO: THREE.TOUCH.DOLLY_PAN,   // Two fingers for zoom + pan
+  }
+
+  // Ensure mouse events are properly configured for touchpad usage
+  // Three.js OrbitControls uses default mouse mappings by default
 
   // Initialize infinite star field
   starField = createStarField()
