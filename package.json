@@ -1,0 +1,21 @@
+{
+  "name": "3D Black Hole Animation",
+  "version": "1.0.0",
+  "description": "Real-time interactive 3D animation of a stylized black hole using Three.js and TypeScript",
+  "main": "src/script.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "serve": "python -m http.server 8000"
+  },
+  "dependencies": {
+    "three": "^0.162.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.162.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": ["three.js", "typescript", "3d-animation", "black-hole"],
+  "author": "",
+  "license": "ISC"
+}
