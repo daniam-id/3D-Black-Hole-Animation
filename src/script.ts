@@ -195,9 +195,10 @@ function createAccretionDisk(): THREE.Points {
     temperatures[i] = Math.max(50000, temperature) // Min temp for outer
 
     const [r, g, b] = kelvinToRgb(temperatures[i])
-    colors[i * 3] = r
-    colors[i * 3 + 1] = g
-    colors[i * 3 + 2] = b
+    // Dim the accretion disk particles to prevent core washing (reduce by 70%)
+    colors[i * 3] = r * 0.3
+    colors[i * 3 + 1] = g * 0.3
+    colors[i * 3 + 2] = b * 0.3
   }
 
   const geometry = new THREE.BufferGeometry()
@@ -438,10 +439,10 @@ function init(): void {
   composer.addPass(renderPass)
 
   const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
-    1.5, // strength
-    0.4, // radius
-    0.85 // threshold
+    new THREE.Vector2(window.innerWidth, window.innerWidth),
+    0.8, // strength (reduced for better core visibility)
+    0.3, // radius (tighter for less core washing)
+    0.92 // threshold (higher to preserve core darkness)
   )
   composer.addPass(bloomPass)
 
