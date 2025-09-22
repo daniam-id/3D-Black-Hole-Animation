@@ -44,7 +44,6 @@ function createBlackHole(): THREE.Mesh {
   `
 
   const fragmentShader = `
-    uniform vec3 cameraPosition;
     uniform float time;
     varying vec3 vPosition;
     varying vec3 vNormal;
@@ -113,7 +112,6 @@ function createBlackHole(): THREE.Mesh {
     vertexShader,
     fragmentShader,
     uniforms: {
-      cameraPosition: { value: new THREE.Vector3() },
       time: { value: 0 }
     },
     transparent: true,
