@@ -16,7 +16,7 @@ let jetStreams: THREE.Points
 let starField: THREE.Points | null = null
 let starFieldRotation: number = 0
 let maxStars: number = 8000
-let currentStarCount: number = 3000
+let currentStarCount: number = 200 // Reduced from 3000 for lighter initial load
 let lastCameraDistance: number = 0
 const rotationSpeed: number = 0.0005 // Very subtle rotation
 
@@ -97,7 +97,7 @@ function kelvinToRgb(kelvin: number): [number, number, number] {
 }
 
 function createAccretionDisk(): THREE.Points {
-  const particleCount = 5000 // Increased for more detail
+  const particleCount = 2000 // Reduced from 5000 for lighter initial load
   const positions = new Float32Array(particleCount * 3)
   const velocities = new Float32Array(particleCount * 3)
   const colors = new Float32Array(particleCount * 3)
@@ -301,8 +301,12 @@ function updateStarField(): void {
       const positions = geometry.attributes.position.array as Float32Array
       const colors = geometry.attributes.color.array as Float32Array
 
+      // Add stars progressively (max 50 per frame) to prevent frame drops
+      const starsToAdd = Math.min(50, starsNeeded - currentStarCount)
+      const newStarCount = currentStarCount + starsToAdd
+
       // Add new stars at greater distances
-      for (let i = currentStarCount; i < starsNeeded; i++) {
+      for (let i = currentStarCount; i < newStarCount; i++) {
         // Generate stars progressively farther out
         const baseDistance = 50 + (i - 3000) * 10 // Scale distance with star count
         const seed = seededRandom(i * 1000)
@@ -328,11 +332,16 @@ function updateStarField(): void {
 
       geometry.attributes.position.needsUpdate = true
       geometry.attributes.color.needsUpdate = true
-      geometry.setDrawRange(0, starsNeeded)
-      currentStarCount = starsNeeded
-    }
+      geometry.setDrawRange(0, newStarCount)
+      currentStarCount = newStarCount
 
-    lastCameraDistance = cameraDistance
+      // Don't update lastCameraDistance yet - continue adding stars if needed
+      if (newStarCount >= starsNeeded) {
+        lastCameraDistance = cameraDistance
+      }
+    } else {
+      lastCameraDistance = cameraDistance
+    }
   }
 }
 
