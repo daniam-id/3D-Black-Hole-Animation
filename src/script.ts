@@ -13,7 +13,24 @@ let blackHole: THREE.Mesh
 let accretionDisk: THREE.Points
 let photonSphere: THREE.Mesh
 let jetStreams: THREE.Points
-let starField: THREE.Points
+let starFields: THREE.Points[] = []
+let lastCameraDistance: number = 0
+
+interface StarLayer {
+  radius: number
+  starCount: number
+}
+const STAR_LAYERS: StarLayer[] = [
+  { radius: 100, starCount: 1500 },
+  { radius: 300, starCount: 2000 },
+  { radius: 600, starCount: 2500 },
+  { radius: 1200, starCount: 3000 },
+  { radius: 2500, starCount: 3500 },
+  { radius: 5000, starCount: 4000 },
+  { radius: 10000, starCount: 4500 }
+]
+
+let maxActiveLayer: number = 0
 
 function createBlackHole(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(1.5, 64, 32)
@@ -222,28 +239,36 @@ function createJetStreams(): THREE.Points {
   return points
 }
 
-function createStarField(): THREE.Points {
-  const starCount = 1500
-  const positions = new Float32Array(starCount * 3)
-  const colors = new Float32Array(starCount * 3)
+function seededRandom(seed: number): number {
+  const x = Math.sin(seed) * 10000
+  return x - Math.floor(x)
+}
 
-  const radius = 100 // Reduced from 800 to 100 for better visibility
+function createStarLayer(layerIndex: number): THREE.Points {
+  const layer = STAR_LAYERS[layerIndex]
+  const positions = new Float32Array(layer.starCount * 3)
+  const colors = new Float32Array(layer.starCount * 3)
 
-  for (let i = 0; i < starCount; i++) {
-    // Uniform distribution on sphere surface
-    const theta = Math.acos(2 * Math.random() - 1) // polar angle
-    const phi = Math.random() * Math.PI * 2 // azimuthal angle
+  // Use seeded random for consistent star placement but varying appearance
+  const sizeSeed = layerIndex * 1000
+  const brightnessSeed = layerIndex * 2000 + 500
 
-    const x = radius * Math.sin(theta) * Math.cos(phi)
-    const y = radius * Math.sin(theta) * Math.sin(phi)
-    const z = radius * Math.cos(theta)
+  for (let i = 0; i < layer.starCount; i++) {
+    // Stable positions based on index and layer
+    const seed = layerIndex * 10000 + i
+    const theta = Math.acos(2 * seededRandom(seed) - 1) // polar angle
+    const phi = seededRandom(seed + 1000) * Math.PI * 2  // azimuthal angle
+
+    const x = layer.radius * Math.sin(theta) * Math.cos(phi)
+    const y = layer.radius * Math.sin(theta) * Math.sin(phi)
+    const z = layer.radius * Math.cos(theta)
 
     positions[i * 3] = x
     positions[i * 3 + 1] = y
     positions[i * 3 + 2] = z
 
-    // White color with random brightness (opacity via alpha channel)
-    const brightness = 0.3 + Math.random() * 0.7 // 0.3-1.0 range
+    // Varying brightness for realism
+    const brightness = 0.3 + seededRandom(brightnessSeed + i) * 0.7
     colors[i * 3] = brightness     // r
     colors[i * 3 + 1] = brightness // g
     colors[i * 3 + 2] = brightness // b
@@ -253,18 +278,61 @@ function createStarField(): THREE.Points {
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 
-  // Use PointsMaterial for simpler, more reliable rendering
+  // Size varies by layer to account for distance - distant stars appear smaller
+  const size = Math.max(0.5, 2.0 - layerIndex * 0.3)
+
   const material = new THREE.PointsMaterial({
     vertexColors: true,
-    size: 2.0, // Increased from jet streams for visibility
+    size: size,
     transparent: true,
-    opacity: 0.8,
+    opacity: Math.max(0.6, 0.9 - layerIndex * 0.1), // Distant layers slightly more transparent
     blending: THREE.AdditiveBlending,
     alphaTest: 0.001
   })
 
   const points = new THREE.Points(geometry, material)
   return points
+}
+
+function initializeStarLayers(): void {
+  // Start with first 3 layers (closest stars)
+  for (let i = 0; i < 3; i++) {
+    const layer = createStarLayer(i)
+    starFields.push(layer)
+    scene.add(layer)
+    maxActiveLayer = Math.max(maxActiveLayer, i)
+  }
+  lastCameraDistance = camera.position.length()
+}
+
+function updateStarLayers(): void {
+  const cameraDistance = camera.position.length()
+  const distanceChange = Math.abs(cameraDistance - lastCameraDistance)
+
+  // Threshold for adding new layers (zoom out significantly)
+  if (distanceChange > 50 || cameraDistance > STAR_LAYERS[maxActiveLayer].radius * 0.8) {
+    // Determine how many layers we should have active
+    let targetLayer = 0
+    for (let i = 0; i < STAR_LAYERS.length; i++) {
+      if (cameraDistance <= STAR_LAYERS[i].radius * 1.5) {
+        targetLayer = i + 2 // Add a few layers ahead
+        break
+      }
+    }
+    targetLayer = Math.min(targetLayer, STAR_LAYERS.length - 1)
+
+    // Add new layers if needed
+    for (let i = maxActiveLayer + 1; i <= targetLayer; i++) {
+      if (i < STAR_LAYERS.length) {
+        const layer = createStarLayer(i)
+        starFields.push(layer)
+        scene.add(layer)
+        maxActiveLayer = i
+      }
+    }
+
+    lastCameraDistance = cameraDistance
+  }
 }
 
 function init(): void {
@@ -300,9 +368,8 @@ function init(): void {
   controls.enableDamping = true
   controls.dampingFactor = 0.05
 
-  // Add star field background
-  starField = createStarField()
-  scene.add(starField)
+  // Initialize star field layers - start with just the first few closest layers
+  initializeStarLayers()
 
   // Add black hole to scene
   blackHole = createBlackHole()
@@ -400,6 +467,7 @@ function animate(): void {
   controls.update()
   animateDiskPhysics()
   animateJetPhysics()
+  updateStarLayers() // Dynamically add star layers as camera zooms out
   // Update uniforms
   const material = accretionDisk.material as THREE.ShaderMaterial
   material.uniforms.time.value = performance.now() * 0.001
