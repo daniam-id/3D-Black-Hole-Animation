@@ -13,6 +13,7 @@ let blackHole: THREE.Mesh
 let accretionDisk: THREE.Points
 let photonSphere: THREE.Mesh
 let jetStreams: THREE.Points
+let starField: THREE.Points
 
 function createBlackHole(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(1.5, 64, 32)
@@ -221,6 +222,51 @@ function createJetStreams(): THREE.Points {
   return points
 }
 
+function createStarField(): THREE.Points {
+  const starCount = 1500
+  const positions = new Float32Array(starCount * 3)
+  const colors = new Float32Array(starCount * 3)
+
+  const radius = 100 // Reduced from 800 to 100 for better visibility
+
+  for (let i = 0; i < starCount; i++) {
+    // Uniform distribution on sphere surface
+    const theta = Math.acos(2 * Math.random() - 1) // polar angle
+    const phi = Math.random() * Math.PI * 2 // azimuthal angle
+
+    const x = radius * Math.sin(theta) * Math.cos(phi)
+    const y = radius * Math.sin(theta) * Math.sin(phi)
+    const z = radius * Math.cos(theta)
+
+    positions[i * 3] = x
+    positions[i * 3 + 1] = y
+    positions[i * 3 + 2] = z
+
+    // White color with random brightness (opacity via alpha channel)
+    const brightness = 0.3 + Math.random() * 0.7 // 0.3-1.0 range
+    colors[i * 3] = brightness     // r
+    colors[i * 3 + 1] = brightness // g
+    colors[i * 3 + 2] = brightness // b
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+
+  // Use PointsMaterial for simpler, more reliable rendering
+  const material = new THREE.PointsMaterial({
+    vertexColors: true,
+    size: 2.0, // Increased from jet streams for visibility
+    transparent: true,
+    opacity: 0.8,
+    blending: THREE.AdditiveBlending,
+    alphaTest: 0.001
+  })
+
+  const points = new THREE.Points(geometry, material)
+  return points
+}
+
 function init(): void {
   // Create scene
   scene = new THREE.Scene()
@@ -253,6 +299,10 @@ function init(): void {
   controls = new OrbitControls(camera, canvas)
   controls.enableDamping = true
   controls.dampingFactor = 0.05
+
+  // Add star field background
+  starField = createStarField()
+  scene.add(starField)
 
   // Add black hole to scene
   blackHole = createBlackHole()
