@@ -428,11 +428,45 @@ function init(): void {
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
   camera.position.set(0, 4, 15) // Further increased distance for natural, comfortable viewing: black hole comfortably framed
 
-  // Create renderer
+  // Get canvas element
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  renderer.setPixelRatio(window.devicePixelRatio)
+
+  // Create renderer with mobile optimizations
+  const context = canvas.getContext('webgl', {
+    alpha: false,
+    antialias: window.devicePixelRatio <= 1, // Disable antialiasing on high-DPI for performance
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: false,
+    stencil: false
+  })
+
+  if (!context) {
+    throw new Error('WebGL not supported')
+  }
+
+  renderer = new THREE.WebGLRenderer({
+    canvas,
+    context,
+    antialias: window.devicePixelRatio <= 1
+  })
+
+  // Mobile-responsive sizing
+  const updateSize = () => {
+    const width = window.innerWidth
+    const height = window.innerHeight
+
+    // Handle dynamic viewport changes on mobile (address bar, etc.)
+    canvas.width = width * window.devicePixelRatio
+    canvas.height = height * window.devicePixelRatio
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+
+    renderer.setSize(width, height, false) // false = don't update style
+  }
+
+  updateSize()
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)) // Cap at 2 for performance
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace // Better color accuracy
 
   // Create post-processing composer
   composer = new EffectComposer(renderer)
