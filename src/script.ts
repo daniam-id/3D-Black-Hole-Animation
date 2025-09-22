@@ -16,7 +16,7 @@ let jetStreams: THREE.Points
 let starField: THREE.Points | null = null
 let starFieldRotation: number = 0
 let maxStars: number = 8000
-let currentStarCount: number = 200 // Reduced from 3000 for lighter initial load
+let currentStarCount: number = 1500 // Restored for dense, realistic starfield while keeping performance optimizations
 let lastCameraDistance: number = 0
 const rotationSpeed: number = 0.0005 // Very subtle rotation
 
