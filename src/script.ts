@@ -11,6 +11,8 @@ let controls: OrbitControls
 let composer: EffectComposer
 let blackHole: THREE.Mesh
 let accretionDisk: THREE.Points
+let photonSphere: THREE.Mesh
+let jetStreams: THREE.Points
 
 function createBlackHole(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(1.5, 64, 32)
@@ -53,16 +55,47 @@ function createBlackHole(): THREE.Mesh {
   return mesh
 }
 
+function kelvinToRgb(kelvin: number): [number, number, number] {
+  const temp = kelvin / 100
+
+  let r, g, b
+
+  if (temp <= 66) {
+    r = 255
+    g = temp
+    g = 99.4708025861 * Math.log(g) - 161.1195681661
+    g < 0 ? g = 0 : g > 255 ? g = 255 : 0
+    if (temp <= 19) {
+      b = 0
+    } else {
+      b = temp - 10
+      b = 138.5177312231 * Math.log(b) - 305.0447927307
+      b < 0 ? b = 0 : b > 255 ? b = 255 : 0
+    }
+  } else {
+    r = temp - 60
+    r = 329.698727446 * Math.pow(r, -0.1332047592)
+    r > 255 ? r = 255 : r < 0 ? r = 0 : 0
+    g = temp - 60
+    g = 288.1221695283 * Math.pow(g, -0.0755148492)
+    g > 255 ? g = 255 : g < 0 ? g = 0 : 0
+    b = 255
+  }
+
+  return [Math.round(r) / 255, Math.round(g) / 255, Math.round(b) / 255]
+}
+
 function createAccretionDisk(): THREE.Points {
-  const particleCount = 2000
+  const particleCount = 5000 // Increased for more detail
   const positions = new Float32Array(particleCount * 3)
   const velocities = new Float32Array(particleCount * 3)
   const colors = new Float32Array(particleCount * 3)
+  const temperatures = new Float32Array(particleCount) // Store temperature for Doppler
 
   for (let i = 0; i < particleCount; i++) {
     const angle = Math.random() * Math.PI * 2
-    const radius = 2 + Math.random() * 2 // between 2 and 4
-    const height = (Math.random() - 0.5) * 0.3 // small height variation
+    const radius = 2 + Math.random() * 3 // between 2 and 5, extended for layers
+    const height = (Math.random() - 0.5) * 0.3 // small height variation, add turbulence later
 
     positions[i * 3] = Math.cos(angle) * radius
     positions[i * 3 + 1] = height
@@ -74,23 +107,113 @@ function createAccretionDisk(): THREE.Points {
     velocities[i * 3 + 1] = 0 // no vertical velocity
     velocities[i * 3 + 2] = Math.cos(angle) * speed
 
-    // Improved color gradient: white-hot inner, yellow, orange, red outer
-    const innerGradient = Math.max(0, (radius - 4) / -2) // 1 at inner edge (2), 0 at outer (4)
-    colors[i * 3] = 1.0 // red base
-    colors[i * 3 + 1] = 0.5 + innerGradient * 0.5 // green from 0.5 to 1.0
-    colors[i * 3 + 2] = innerGradient // blue from 0 to 1 at inner
+    // Temperature decreases with radius: inner ~1e6 K, outer ~1e5 K
+    const temperature = 1000000 / (radius - 1) // Approximate falloff
+    temperatures[i] = Math.max(50000, temperature) // Min temp for outer
+
+    const [r, g, b] = kelvinToRgb(temperatures[i])
+    colors[i * 3] = r
+    colors[i * 3 + 1] = g
+    colors[i * 3 + 2] = b
   }
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3))
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geometry.setAttribute('temperature', new THREE.BufferAttribute(temperatures, 1))
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      time: { value: 0 },
+      cameraPosition: { value: new THREE.Vector3() }
+    },
+    vertexShader: `
+      attribute float temperature;
+      attribute vec3 velocity;
+      varying vec3 vColor;
+      varying float vDopplerFactor;
+
+      void main() {
+        vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+        vec3 viewDirection = normalize(cameraPosition - worldPosition);
+        float velocityAlongView = dot(normalize(velocity), viewDirection);
+
+        // Simple relativistic Doppler: blue shift for approaching
+        vDopplerFactor = 1.0 / (1.0 - velocityAlongView * 0.1); // Approximation
+
+        vec3 dopplerColor = temperature > 100000.0 ? vec3(1.0, 0.8, 0.7) : // Hot
+                           temperature > 50000.0 ? vec3(1.0, 0.5, 0.2) : // Warm
+                           vec3(1.0, 0.2, 0.0); // Cool
+        vColor = dopplerColor * vDopplerFactor;
+
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = 3.0 * (300.0 / -mvPosition.z);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+
+      void main() {
+        float strength = 1.0 - distance(gl_PointCoord, vec2(0.5));
+        strength = pow(strength, 2.0);
+        gl_FragColor = vec4(vColor, strength);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide
+  })
+
+  const points = new THREE.Points(geometry, material)
+  return points
+}
+
+function createPhotonSphere(): THREE.Mesh {
+  const geometry = new THREE.TorusGeometry(3, 0.1, 16, 100)
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.5,
+    blending: THREE.AdditiveBlending
+  })
+  return new THREE.Mesh(geometry, material)
+}
+
+function createJetStreams(): THREE.Points {
+  const particleCount = 1000
+  const positions = new Float32Array(particleCount * 3)
+  const colors = new Float32Array(particleCount * 3)
+  const velocities = new Float32Array(particleCount * 3)
+
+  for (let i = 0; i < particleCount; i++) {
+    const pole = Math.random() > 0.5 ? 1 : -1 // Top or bottom
+    const angle = Math.random() * Math.PI * 2
+    const radius = 0.1 + Math.random() * 0.2 // Small radius near poles
+    const height = pole * (2 + Math.random() * 5) // Extending upwards/downwards
+
+    positions[i * 3] = Math.cos(angle) * radius
+    positions[i * 3 + 1] = height
+    positions[i * 3 + 2] = Math.sin(angle) * radius
+
+    colors[i * 3] = 0.8
+    colors[i * 3 + 1] = 0.8
+    colors[i * 3 + 2] = 1.0
+
+    velocities[i * 3 + 1] = pole * 0.02 // Vertical velocity upwards/downwards
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3))
 
   const material = new THREE.PointsMaterial({
     vertexColors: true,
-    size: 0.05,
+    size: 0.02,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.8,
     blending: THREE.AdditiveBlending
   })
 
@@ -139,6 +262,14 @@ function init(): void {
   accretionDisk = createAccretionDisk()
   scene.add(accretionDisk)
 
+  // Add photon sphere
+  photonSphere = createPhotonSphere()
+  scene.add(photonSphere)
+
+  // Add jet streams
+  jetStreams = createJetStreams()
+  scene.add(jetStreams)
+
   // Add event listeners
   window.addEventListener('resize', onWindowResize)
 
@@ -169,14 +300,44 @@ function animateDiskPhysics(): void {
     positions.setX(i, x + velocities.getX(i))
     positions.setZ(i, z + velocities.getZ(i))
 
-    // Reset particles that fall into the black hole
-    if (distance < 1.5) {
+    // Add turbulence
+    positions.setY(i, positions.getY(i) + (Math.random() - 0.5) * 0.005)
+    positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.002)
+    positions.setZ(i, positions.getZ(i) + (Math.random() - 0.5) * 0.002)
+
+    // Reset particles that fall into the black hole or go too far
+    if (distance < 1.5 || distance > 7) {
       const angle = Math.random() * Math.PI * 2
-      const radius = 3 + Math.random() * 1 // respawn further out
+      const radius = 2.5 + Math.random() * 2 // respawn between 2.5 and 4.5
       positions.setX(i, Math.cos(angle) * radius)
       positions.setZ(i, Math.sin(angle) * radius)
+      positions.setY(i, (Math.random() - 0.5) * 0.3)
       velocities.setX(i, -Math.sin(angle) * 0.01)
       velocities.setZ(i, Math.cos(angle) * 0.01)
+      velocities.setY(i, 0)
+    }
+  }
+
+  positions.needsUpdate = true
+  velocities.needsUpdate = true
+}
+
+function animateJetPhysics(): void {
+  const positions = jetStreams.geometry.attributes.position
+  const velocities = jetStreams.geometry.attributes.velocity
+
+  for (let i = 0; i < positions.count; i++) {
+    const y = positions.getY(i)
+    const pole = y > 0 ? 1 : -1
+
+    // Move upwards/downwards with acceleration
+    velocities.setY(i, velocities.getY(i) + pole * 0.001)
+    positions.setY(i, y + velocities.getY(i))
+
+    // Reset if too far
+    if (Math.abs(y) > 10) {
+      positions.setY(i, pole * 2)
+      velocities.setY(i, pole * 0.02)
     }
   }
 
@@ -188,6 +349,11 @@ function animate(): void {
   requestAnimationFrame(animate)
   controls.update()
   animateDiskPhysics()
+  animateJetPhysics()
+  // Update uniforms
+  const material = accretionDisk.material as THREE.ShaderMaterial
+  material.uniforms.time.value = performance.now() * 0.001
+  material.uniforms.cameraPosition.value.copy(camera.position)
   composer.render()
 }
 
