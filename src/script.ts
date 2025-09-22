@@ -26,40 +26,96 @@ interface StarData {
 }
 
 function createBlackHole(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(1.5, 64, 32)
+  const geometry = new THREE.SphereGeometry(1.4, 128, 64) // Smaller radius, higher detail
 
   const vertexShader = `
     varying vec3 vPosition;
     varying vec3 vNormal;
+    varying vec2 vUv;
+    varying vec3 vWorldPosition;
 
     void main() {
       vPosition = (modelMatrix * vec4(position, 1.0)).xyz;
       vNormal = normalMatrix * normal;
+      vUv = uv;
+      vWorldPosition = position;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
   `
 
   const fragmentShader = `
+    uniform vec3 cameraPosition;
+    uniform float time;
     varying vec3 vPosition;
     varying vec3 vNormal;
+    varying vec2 vUv;
+    varying vec3 vWorldPosition;
+
+    // Photon sphere radius (ISCO) ~ 3M, value scaled for visualization
+    #define PHOTON_SPHERE_RADIUS 1.03
+
+    // Event horizon radius = 2M, scaled for visualization
+    #define EVENT_HORIZON_RADIUS 1.0
 
     void main() {
       vec3 normal = normalize(vNormal);
       vec3 viewDirection = normalize(cameraPosition - vPosition);
 
-      // Simulate gravitational lensing effect by fading opacity based on viewing angle
+      // Enhanced gravitational lensing - stronger near edge, softer near center
+      float distFromCenter = length(vWorldPosition.xy);
       float angleFactor = dot(normal, viewDirection);
-      float lensingOpacity = smoothstep(-0.1, 0.9, angleFactor);
+      float lensingPower = 1.0 - smoothstep(0.0, PHOTON_SPHERE_RADIUS, distFromCenter);
 
-      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - lensingOpacity);
+      // Strong gravitational redshift near center
+      float redshift = smoothstep(EVENT_HORIZON_RADIUS, PHOTON_SPHERE_RADIUS, distFromCenter);
+
+      // Dynamic accretion disk shadow effect
+      float diskShadow = 1.0 - smoothstep(0.0, 0.3, abs(vWorldPosition.y - 0.1));
+
+      // Enhanced photon sphere glow
+      float photonGlow = 1.0 - smoothstep(0.95, 1.1, distFromCenter);
+      photonGlow = photonGlow * photonGlow * (0.5 + 0.5 * sin(time * 10.0 + vUv.x * 20.0));
+
+      // Combine effects: true black absorption with subtle rim effects
+      float alpha = 0.0; // Start with complete opacity
+
+      // Add rim lighting at photon sphere
+      alpha += photonGlow * 0.3;
+
+      // Accretion disk corona effect
+      float coronaRing = smoothstep(1.5, 1.8, distFromCenter) * (1.0 - smoothstep(1.8, 2.2, distFromCenter));
+      alpha += coronaRing * 0.1;
+
+      // Gravitational lensing distortion
+      float distortion = lensingPower * (1.0 - abs(angleFactor));
+      alpha += distortion * 0.05;
+
+      // Apply disk shadow
+      alpha *= (1.0 - diskShadow * 0.2);
+
+      // Ensure black hole core remains dark
+      if (distFromCenter < EVENT_HORIZON_RADIUS) {
+        alpha = 0.0; // True event horizon
+      }
+
+      // Color shift due to gravitational redshift
+      float blueShift = redshift;
+      vec3 rimColor = mix(vec3(0.8, 0.9, 1.0), vec3(0.3, 0.4, 0.8), redshift);
+
+      gl_FragColor = vec4(rimColor * photonGlow * 0.5, alpha);
     }
   `
 
   const material = new THREE.ShaderMaterial({
     vertexShader,
     fragmentShader,
+    uniforms: {
+      cameraPosition: { value: new THREE.Vector3() },
+      time: { value: 0 }
+    },
     transparent: true,
-    side: THREE.DoubleSide
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending
   })
 
   const mesh = new THREE.Mesh(geometry, material)
@@ -67,6 +123,7 @@ function createBlackHole(): THREE.Mesh {
 }
 
 function kelvinToRgb(kelvin: number): [number, number, number] {
+  // Enhanced color temperature mapping with better scientific accuracy
   const temp = kelvin / 100
 
   let r, g, b
@@ -93,7 +150,19 @@ function kelvinToRgb(kelvin: number): [number, number, number] {
     b = 255
   }
 
-  return [Math.round(r) / 255, Math.round(g) / 255, Math.round(b) / 255]
+  // Add temperature-dependent intensity scaling for more realistic emission
+  let intensityScale = 1.0
+  if (kelvin > 100000) {
+    intensityScale = 2.0 * (kelvin / 1000000) // Very hot sources appear brighter
+  } else if (kelvin < 3000) {
+    intensityScale = 0.5 // Cooler sources are dimmer
+  }
+
+  return [
+    Math.min(1.0, Math.round(r) / 255 * intensityScale),
+    Math.min(1.0, Math.round(g) / 255 * intensityScale),
+    Math.min(1.0, Math.round(b) / 255 * intensityScale)
+  ]
 }
 
 function createAccretionDisk(): THREE.Points {
