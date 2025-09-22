@@ -118,7 +118,8 @@ function createBlackHole(): THREE.Mesh {
     },
     transparent: true,
     side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending
+    blending: THREE.NormalBlending,
+    depthWrite: true
   })
 
   const mesh = new THREE.Mesh(geometry, material)
