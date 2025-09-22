@@ -373,18 +373,28 @@ function init(): void {
   )
   composer.addPass(bloomPass)
 
-  // Create controls with full camera freedom
+  // Create controls with comprehensive 6DOF camera freedom
   controls = new OrbitControls(camera, canvas)
-  controls.enableRotate = true     // Enable orbital rotation (orbit around target)
-  controls.enableZoom = true       // Enable zoom in/out
-  controls.enablePan = true        // Enable pan (move camera left/right/up/down)
-  controls.enableDamping = true    // Smooth camera movement
-  controls.dampingFactor = 0.05    // Damping strength
-  controls.screenSpacePanning = false // Orbit around world space, not screen space
-  controls.minDistance = 1         // Minimum zoom distance
-  controls.maxDistance = 100000    // Maximum zoom distance (infinite zoom)
-  controls.maxPolarAngle = Math.PI // Allow full 360° vertical rotation
-  controls.target.set(0, 0, 0)     // Set orbit center to black hole location
+
+  // Enable all movement axes
+  controls.enableRotate = true         // Orbital rotation around target
+  controls.enableZoom = true           // Zoom in/out with scroll wheel/two-finger pinch
+  controls.enablePan = true            // Pan camera position horizontally/vertically
+
+  // Smooth motion control
+  controls.enableDamping = true        // Enable smooth, physics-based camera movement
+  controls.dampingFactor = 0.08        // Increased damping for smoother, more natural feel
+
+  // Movement boundaries and behavior
+  controls.screenSpacePanning = false  // Orbit around world space (not screen space)
+  controls.minDistance = 0.5           // Allow very close zoom to black hole
+  controls.maxDistance = 1000000       // Effectively unlimited zoom out
+  controls.maxPolarAngle = Math.PI     // Full 360° vertical rotation capability
+  controls.minPolarAngle = 0           // Can rotate fully above and below
+
+  // Orbit target and centering
+  controls.target.set(0, 0, 0)         // Orbit center at black hole position
+  controls.update()                    // Force initial update to set correct orientation
 
   // Initialize infinite star field
   starField = createStarField()
