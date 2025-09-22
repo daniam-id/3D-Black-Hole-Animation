@@ -26,7 +26,7 @@ interface StarData {
 }
 
 function createBlackHole(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(1.4, 128, 64) // Smaller radius, higher detail
+  const geometry = new THREE.SphereGeometry(1.4, 256, 128) // Enhanced detail for perfect spherical appearance
 
   const vertexShader = `
     varying vec3 vPosition;
@@ -51,58 +51,61 @@ function createBlackHole(): THREE.Mesh {
     varying vec2 vUv;
     varying vec3 vWorldPosition;
 
-    // Photon sphere radius (ISCO) ~ 3M, value scaled for visualization
-    #define PHOTON_SPHERE_RADIUS 1.03
-
-    // Event horizon radius = 2M, scaled for visualization
+    // Event horizon radius - the true black sphere boundary
     #define EVENT_HORIZON_RADIUS 1.0
 
+    // Photon sphere radius (ISCO) - where photons orbit
+    #define PHOTON_SPHERE_RADIUS 1.03
+
     void main() {
+      // Calculate distance from center for proper spherical definition
+      float distFromCenter = length(vWorldPosition.xy + vWorldPosition.z * 0.1);
+
+      // View direction for orientation-dependent effects
       vec3 normal = normalize(vNormal);
       vec3 viewDirection = normalize(cameraPosition - vPosition);
-
-      // Enhanced gravitational lensing - stronger near edge, softer near center
-      float distFromCenter = length(vWorldPosition.xy);
       float angleFactor = dot(normal, viewDirection);
-      float lensingPower = 1.0 - smoothstep(0.0, PHOTON_SPHERE_RADIUS, distFromCenter);
 
-      // Strong gravitational redshift near center
-      float redshift = smoothstep(EVENT_HORIZON_RADIUS, PHOTON_SPHERE_RADIUS, distFromCenter);
-
-      // Dynamic accretion disk shadow effect
-      float diskShadow = 1.0 - smoothstep(0.0, 0.3, abs(vWorldPosition.y - 0.1));
-
-      // Enhanced photon sphere glow
-      float photonGlow = 1.0 - smoothstep(0.95, 1.1, distFromCenter);
-      photonGlow = photonGlow * photonGlow * (0.5 + 0.5 * sin(time * 10.0 + vUv.x * 20.0));
-
-      // Combine effects: true black absorption with subtle rim effects
-      float alpha = 0.0; // Start with complete opacity
-
-      // Add rim lighting at photon sphere
-      alpha += photonGlow * 0.3;
-
-      // Accretion disk corona effect
-      float coronaRing = smoothstep(1.5, 1.8, distFromCenter) * (1.0 - smoothstep(1.8, 2.2, distFromCenter));
-      alpha += coronaRing * 0.1;
-
-      // Gravitational lensing distortion
-      float distortion = lensingPower * (1.0 - abs(angleFactor));
-      alpha += distortion * 0.05;
-
-      // Apply disk shadow
-      alpha *= (1.0 - diskShadow * 0.2);
-
-      // Ensure black hole core remains dark
-      if (distFromCenter < EVENT_HORIZON_RADIUS) {
-        alpha = 0.0; // True event horizon
+      // === CORE BLACK HOLE SPHERE ===
+      // The event horizon is absolutely black - this defines the sphere
+      if (distFromCenter <= EVENT_HORIZON_RADIUS) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // Pure black sphere
+        return; // Exit early for clean black sphere
       }
 
-      // Color shift due to gravitational redshift
-      float blueShift = redshift;
-      vec3 rimColor = mix(vec3(0.8, 0.9, 1.0), vec3(0.3, 0.4, 0.8), redshift);
+      // === RIM EFFECTS OUTSIDE EVENT HORIZON ===
+      float outsideEventHorizon = distFromCenter - EVENT_HORIZON_RADIUS;
 
-      gl_FragColor = vec4(rimColor * photonGlow * 0.5, alpha);
+      // Enhanced photon sphere glow at just the right distance
+      float photonSphereDistance = abs(distFromCenter - PHOTON_SPHERE_RADIUS);
+      float photonGlow = 1.0 - smoothstep(0.0, 0.05, photonSphereDistance);
+      photonGlow = photonGlow * photonGlow; // Sharpen the effect
+      photonGlow *= (0.6 + 0.4 * sin(time * 8.0 + vUv.x * 15.0 + vUv.y * 8.0)); // Animated
+
+      // Gravitational redshift effect near event horizon
+      float redshiftFactor = 1.0 - smoothstep(EVENT_HORIZON_RADIUS, PHOTON_SPHERE_RADIUS, distFromCenter);
+      redshiftFactor = pow(redshiftFactor, 2.0); // Sharper falloff
+
+      // Accretion disk grazing effect
+      float diskGrazing = 1.0 - smoothstep(0.0, 0.4, abs(vWorldPosition.y));
+      diskGrazing *= (1.0 - smoothstep(PHOTON_SPHERE_RADIUS, 1.6, distFromCenter));
+
+      // Combined rim color: blue-shifted photons at redshift boundary
+      vec3 rimColor = mix(vec3(0.1, 0.15, 0.6), vec3(0.3, 0.4, 0.8), redshiftFactor);
+
+      // Calculate final alpha for rim effects
+      float alpha = 0.0;
+      alpha += photonGlow * 0.4;        // Photon sphere glow
+      alpha += redshiftFactor * 0.2;    // Gravitational redshift
+      alpha += diskGrazing * 0.3;       // Disk illumination effects
+
+      // Ensure smooth alpha blending outside event horizon
+      alpha *= (1.0 - smoothstep(PHOTON_SPHERE_RADIUS + 0.1, PHOTON_SPHERE_RADIUS + 0.3, distFromCenter));
+
+      // Apply subtle color to rim effects
+      vec3 finalColor = rimColor * alpha * 0.6; // Slightly dimmed for realism
+
+      gl_FragColor = vec4(finalColor, alpha);
     }
   `
 
