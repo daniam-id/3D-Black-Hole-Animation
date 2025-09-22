@@ -419,9 +419,9 @@ function init(): void {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x000011) // Very dark blue for space
 
-  // Create camera with optimal initial viewing distance
+  // Create camera with optimal initial viewing distance for comfortable black hole framing
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
-  camera.position.set(0, 2, 8) // Positioned for immediate black hole visibility with slight elevation
+  camera.position.set(0, 3, 12) // Increased distance for better framing: black hole fits nicely in view
 
   // Create renderer
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
