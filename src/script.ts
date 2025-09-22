@@ -364,10 +364,18 @@ function init(): void {
   )
   composer.addPass(bloomPass)
 
-  // Create controls
+  // Create controls with full camera freedom
   controls = new OrbitControls(camera, canvas)
-  controls.enableDamping = true
-  controls.dampingFactor = 0.05
+  controls.enableRotate = true     // Enable orbital rotation (orbit around target)
+  controls.enableZoom = true       // Enable zoom in/out
+  controls.enablePan = true        // Enable pan (move camera left/right/up/down)
+  controls.enableDamping = true    // Smooth camera movement
+  controls.dampingFactor = 0.05    // Damping strength
+  controls.screenSpacePanning = false // Orbit around world space, not screen space
+  controls.minDistance = 1         // Minimum zoom distance
+  controls.maxDistance = 100000    // Maximum zoom distance (infinite zoom)
+  controls.maxPolarAngle = Math.PI // Allow full 360° vertical rotation
+  controls.target.set(0, 0, 0)     // Set orbit center to black hole location
 
   // Initialize infinite star field
   starField = createStarField()
