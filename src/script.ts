@@ -429,7 +429,10 @@ function init(): void {
 
   // Create camera with natural initial viewing distance for comfortable black hole framing
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000)
-  camera.position.set(0, 4, 15) // Further increased distance for natural, comfortable viewing: black hole comfortably framed
+  // Set camera position: farther back on mobile for better framing
+  const isMobile = window.innerWidth < 768
+  const cameraZ = isMobile ? 25 : 15 // Increased distance on mobile for better framing
+  camera.position.set(0, isMobile ? 6 : 4, cameraZ) // Adjust Y position for better angle on mobile
 
   // Get canvas element
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
