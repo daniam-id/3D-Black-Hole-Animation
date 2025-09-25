@@ -8,27 +8,38 @@ import { EffectComposer } from 'https://unpkg.com/three@0.162.0/examples/jsm/pos
 import { RenderPass } from 'https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/RenderPass.js'
 // @ts-ignore
 import { UnrealBloomPass } from 'https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/UnrealBloomPass.js'
+// @ts-ignore
+import { ShaderPass } from 'https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/ShaderPass.js'
+// @ts-ignore
+import { GPUComputationRenderer } from 'https://unpkg.com/three@0.162.0/examples/jsm/misc/GPUComputationRenderer.js'
 
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
 let renderer: THREE.WebGLRenderer
 let controls: OrbitControls
 let composer: EffectComposer
+let lensingPass: ShaderPass
+let bloomPass: UnrealBloomPass
 let blackHole: THREE.Mesh
 let accretionDisk: THREE.Points
 let photonSphere: THREE.Mesh
 let jetStreams: THREE.Points
-let starField: THREE.Points | null = null
+let starField: THREE.LOD | null = null
 let starFieldRotation: number = 0
 let maxStars: number = 8000
 let currentStarCount: number = 1500 // Restored for dense, realistic starfield while keeping performance optimizations
 let lastCameraDistance: number = 0
 const rotationSpeed: number = 0.0005 // Very subtle rotation
 
-interface StarData {
-  position: THREE.Vector3
-  brightness: number
-}
+// GPU Computation for particles
+let gpuComputeDisk: GPUComputationRenderer | null = null
+let positionVariableDisk: any
+let velocityVariableDisk: any
+let gpuComputeJets: GPUComputationRenderer | null = null
+let positionVariableJets: any
+let velocityVariableJets: any
+const TEXTURE_WIDTH = 64; // For ~4096 particles, but we'll use 2000/1000
+
 
 function createBlackHole(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(1.4, 256, 128) // Enhanced detail for perfect spherical appearance
@@ -173,43 +184,94 @@ function kelvinToRgb(kelvin: number): [number, number, number] {
 }
 
 function createAccretionDisk(): THREE.Points {
-  const particleCount = 2000 // Reduced from 5000 for lighter initial load
+  const particleCount = 2000
   const positions = new Float32Array(particleCount * 3)
   const velocities = new Float32Array(particleCount * 3)
   const colors = new Float32Array(particleCount * 3)
-  const temperatures = new Float32Array(particleCount) // Store temperature for Doppler
+  const temperatures = new Float32Array(particleCount)
 
+  // Initialize data as before
   for (let i = 0; i < particleCount; i++) {
     const angle = Math.random() * Math.PI * 2
-    const radius = 2 + Math.random() * 3 // between 2 and 5, extended for layers
-    const height = (Math.random() - 0.5) * 0.3 // small height variation, add turbulence later
+    const radius = 2 + Math.random() * 3
+    const height = (Math.random() - 0.5) * 0.3
 
     positions[i * 3] = Math.cos(angle) * radius
     positions[i * 3 + 1] = height
     positions[i * 3 + 2] = Math.sin(angle) * radius
 
-    // Initialize tangential velocity for orbital motion
-    const speed = 0.01 + Math.random() * 0.005 // slight variation in speed
-    velocities[i * 3] = -Math.sin(angle) * speed // perpendicular to radius
-    velocities[i * 3 + 1] = 0 // no vertical velocity
+    const speed = 0.01 + Math.random() * 0.005
+    velocities[i * 3] = -Math.sin(angle) * speed
+    velocities[i * 3 + 1] = 0
     velocities[i * 3 + 2] = Math.cos(angle) * speed
 
-    // Temperature decreases with radius: inner ~1e6 K, outer ~1e5 K
-    const temperature = 1000000 / (radius - 1) // Approximate falloff
-    temperatures[i] = Math.max(50000, temperature) // Min temp for outer
+    const temperature = 1000000 / (radius - 1)
+    temperatures[i] = Math.max(50000, temperature)
 
     const [r, g, b] = kelvinToRgb(temperatures[i])
-    // Dim the accretion disk particles to prevent core washing (reduce by 70%)
     colors[i * 3] = r * 0.3
     colors[i * 3 + 1] = g * 0.3
     colors[i * 3 + 2] = b * 0.3
   }
 
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3))
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-  geometry.setAttribute('temperature', new THREE.BufferAttribute(temperatures, 1))
+  // GPU Setup
+  if (!gpuComputeDisk) {
+    gpuComputeDisk = new GPUComputationRenderer(TEXTURE_WIDTH, TEXTURE_WIDTH, renderer);
+
+    const positionTexture = gpuComputeDisk.createTexture();
+    const velocityTexture = gpuComputeDisk.createTexture();
+
+    // Fill initial data (flatten to 2D texture)
+    const posData = new Float32Array(TEXTURE_WIDTH * TEXTURE_WIDTH * 4);
+    const velData = new Float32Array(TEXTURE_WIDTH * TEXTURE_WIDTH * 4);
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 4;
+      posData[idx] = positions[i * 3];
+      posData[idx + 1] = positions[i * 3 + 1];
+      posData[idx + 2] = positions[i * 3 + 2];
+      posData[idx + 3] = 1.0; // w=1 for active
+
+      velData[idx] = velocities[i * 3];
+      velData[idx + 1] = velocities[i * 3 + 1];
+      velData[idx + 2] = velocities[i * 3 + 2];
+      velData[idx + 3] = 0.0;
+    }
+    gpuComputeDisk.init();
+    positionVariableDisk = gpuComputeDisk.addVariable('texturePosition', positionComputeShader, positionTexture);
+    velocityVariableDisk = gpuComputeDisk.addVariable('textureVelocity', velocityComputeShader, velocityTexture);
+
+    gpuComputeDisk.setVariableDependencies(positionVariableDisk, [positionVariableDisk, velocityVariableDisk]);
+    gpuComputeDisk.setVariableDependencies(velocityVariableDisk, [positionVariableDisk, velocityVariableDisk]);
+
+    positionVariableDisk.material.uniforms['time'] = { value: 0 };
+    velocityVariableDisk.material.uniforms['time'] = { value: 0 };
+    velocityVariableDisk.material.uniforms['gravityStrength'] = { value: 0.0001 };
+
+    gpuComputeDisk.init();
+  }
+
+  // Copy initial data to textures
+  const posArray = positionVariableDisk.texture.image.data as Float32Array;
+  const velArray = velocityVariableDisk.texture.image.data as Float32Array;
+  for (let i = 0; i < particleCount; i++) {
+    const idx = i * 4;
+    posArray[idx] = positions[i * 3];
+    posArray[idx + 1] = positions[i * 3 + 1];
+    posArray[idx + 2] = positions[i * 3 + 2];
+    posArray[idx + 3] = 1.0;
+
+    velArray[idx] = velocities[i * 3];
+    velArray[idx + 1] = velocities[i * 3 + 1];
+    velArray[idx + 2] = velocities[i * 3 + 2];
+    velArray[idx + 3] = 0.0;
+  }
+  positionVariableDisk.texture.needsUpdate = true;
+  velocityVariableDisk.texture.needsUpdate = true;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('temperature', new THREE.BufferAttribute(temperatures, 1));
 
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -218,21 +280,19 @@ function createAccretionDisk(): THREE.Points {
     },
     vertexShader: `
       attribute float temperature;
-      attribute vec3 velocity;
       varying vec3 vColor;
       varying float vDopplerFactor;
 
       void main() {
         vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
         vec3 viewDirection = normalize(cameraPosition - worldPosition);
-        float velocityAlongView = dot(normalize(velocity), viewDirection);
+        // Simplified Doppler without velocity attribute (use position-derived)
+        float radialVel = length(worldPosition.xz) * 0.01; // Approx orbital speed
+        vDopplerFactor = 1.0 / (1.0 - radialVel * 0.1);
 
-        // Simple relativistic Doppler: blue shift for approaching
-        vDopplerFactor = 1.0 / (1.0 - velocityAlongView * 0.1); // Approximation
-
-        vec3 dopplerColor = temperature > 100000.0 ? vec3(1.0, 0.8, 0.7) : // Hot
-                           temperature > 50000.0 ? vec3(1.0, 0.5, 0.2) : // Warm
-                           vec3(1.0, 0.2, 0.0); // Cool
+        vec3 dopplerColor = temperature > 100000.0 ? vec3(1.0, 0.8, 0.7) :
+                           temperature > 50000.0 ? vec3(1.0, 0.5, 0.2) :
+                           vec3(1.0, 0.2, 0.0);
         vColor = dopplerColor * vDopplerFactor;
 
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -258,6 +318,71 @@ function createAccretionDisk(): THREE.Points {
   return points
 }
 
+// Compute shaders for disk
+const positionComputeShader = `
+  uniform float time;
+  uniform float gravityStrength;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D( texturePosition, uv ).xyz;
+    vec3 vel = texture2D( textureVelocity, uv ).xyz;
+
+    vec2 xy = pos.xz; // Disk in xz plane
+    float dist = length(xy);
+    if (dist > 0.0) {
+      vec2 accel = -gravityStrength * xy / (dist * dist);
+      vel.xz += accel * 0.016; // dt approx
+    }
+
+    // Orbital tangential adjustment (simple)
+    float perpX = -vel.z * 0.001;
+    float perpZ = vel.x * 0.001;
+    vel.x += perpX;
+    vel.z += perpZ;
+
+    // Update position
+    pos += vel * 0.016;
+
+    // Reset if too close or far
+    if (dist < 1.5 || dist > 7.0) {
+      float angle = time * 0.1 + uv.x * 6.28;
+      pos.x = cos(angle) * (2.5 + uv.y * 2.0);
+      pos.z = sin(angle) * (2.5 + uv.y * 2.0);
+      pos.y = (uv.x - 0.5) * 0.3;
+      vel = vec3(-sin(angle) * 0.01, 0.0, cos(angle) * 0.01);
+    }
+
+    // Add turbulence
+    pos.y += (sin(time + uv.x * 10.0) * 0.005);
+    pos.x += (cos(time + uv.y * 10.0) * 0.002);
+    pos.z += (sin(time + uv.x * 10.0) * 0.002);
+
+    gl_FragColor = vec4( pos, 1.0 );
+  }
+`;
+
+const velocityComputeShader = `
+  uniform float time;
+  uniform float gravityStrength;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D( texturePosition, uv ).xyz;
+    vec3 vel = texture2D( textureVelocity, uv ).xyz;
+
+    vec2 xy = pos.xz;
+    float dist = length(xy);
+    if (dist > 0.0) {
+      vec2 accel = -gravityStrength * xy / (dist * dist);
+      vel.xz += accel * 0.016;
+    }
+
+    // Additional turbulence in velocity
+    vel += vec3( sin(time + uv.x * 10.0) * 0.001, cos(time + uv.y * 10.0) * 0.002, sin(time + uv.x * 10.0) * 0.001 );
+
+    gl_FragColor = vec4( vel, 0.0 );
+  }
+`;
+
 function createPhotonSphere(): THREE.Mesh {
   const geometry = new THREE.TorusGeometry(3, 0.1, 16, 100)
   const material = new THREE.MeshBasicMaterial({
@@ -275,11 +400,12 @@ function createJetStreams(): THREE.Points {
   const colors = new Float32Array(particleCount * 3)
   const velocities = new Float32Array(particleCount * 3)
 
+  // Initialize data
   for (let i = 0; i < particleCount; i++) {
-    const pole = Math.random() > 0.5 ? 1 : -1 // Top or bottom
+    const pole = Math.random() > 0.5 ? 1 : -1
     const angle = Math.random() * Math.PI * 2
-    const radius = 0.1 + Math.random() * 0.2 // Small radius near poles
-    const height = pole * (2 + Math.random() * 5) // Extending upwards/downwards
+    const radius = 0.1 + Math.random() * 0.2
+    const height = pole * (2 + Math.random() * 5)
 
     positions[i * 3] = Math.cos(angle) * radius
     positions[i * 3 + 1] = height
@@ -289,13 +415,65 @@ function createJetStreams(): THREE.Points {
     colors[i * 3 + 1] = 0.8
     colors[i * 3 + 2] = 1.0
 
-    velocities[i * 3 + 1] = pole * 0.02 // Vertical velocity upwards/downwards
+    velocities[i * 3 + 1] = pole * 0.02
   }
 
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-  geometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3))
+  // GPU Setup for jets
+  if (!gpuComputeJets) {
+    gpuComputeJets = new GPUComputationRenderer(TEXTURE_WIDTH, TEXTURE_WIDTH, renderer);
+
+    const positionTextureJets = gpuComputeJets.createTexture();
+    const velocityTextureJets = gpuComputeJets.createTexture();
+
+    const posDataJets = new Float32Array(TEXTURE_WIDTH * TEXTURE_WIDTH * 4);
+    const velDataJets = new Float32Array(TEXTURE_WIDTH * TEXTURE_WIDTH * 4);
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 4;
+      posDataJets[idx] = positions[i * 3];
+      posDataJets[idx + 1] = positions[i * 3 + 1];
+      posDataJets[idx + 2] = positions[i * 3 + 2];
+      posDataJets[idx + 3] = 1.0;
+
+      velDataJets[idx] = velocities[i * 3];
+      velDataJets[idx + 1] = velocities[i * 3 + 1];
+      velDataJets[idx + 2] = velocities[i * 3 + 2];
+      velDataJets[idx + 3] = 0.0;
+    }
+    gpuComputeJets.init();
+    positionVariableJets = gpuComputeJets.addVariable('texturePositionJets', jetPositionComputeShader, positionTextureJets);
+    velocityVariableJets = gpuComputeJets.addVariable('textureVelocityJets', jetVelocityComputeShader, velocityTextureJets);
+
+    gpuComputeJets.setVariableDependencies(positionVariableJets, [positionVariableJets, velocityVariableJets]);
+    gpuComputeJets.setVariableDependencies(velocityVariableJets, [positionVariableJets, velocityVariableJets]);
+
+    positionVariableJets.material.uniforms['time'] = { value: 0 };
+    velocityVariableJets.material.uniforms['time'] = { value: 0 };
+    velocityVariableJets.material.uniforms['acceleration'] = { value: 0.001 };
+
+    gpuComputeJets.init();
+  }
+
+  // Copy initial data
+  const posArrayJets = positionVariableJets.texture.image.data as Float32Array;
+  const velArrayJets = velocityVariableJets.texture.image.data as Float32Array;
+  for (let i = 0; i < particleCount; i++) {
+    const idx = i * 4;
+    posArrayJets[idx] = positions[i * 3];
+    posArrayJets[idx + 1] = positions[i * 3 + 1];
+    posArrayJets[idx + 2] = positions[i * 3 + 2];
+    posArrayJets[idx + 3] = 1.0;
+
+    velArrayJets[idx] = velocities[i * 3];
+    velArrayJets[idx + 1] = velocities[i * 3 + 1];
+    velArrayJets[idx + 2] = velocities[i * 3 + 2];
+    velArrayJets[idx + 3] = 0.0;
+  }
+  positionVariableJets.texture.needsUpdate = true;
+  velocityVariableJets.texture.needsUpdate = true;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const material = new THREE.PointsMaterial({
     vertexColors: true,
@@ -309,116 +487,177 @@ function createJetStreams(): THREE.Points {
   return points
 }
 
+// Compute shaders for jets (simple linear motion)
+const jetPositionComputeShader = `
+  uniform float time;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D( texturePositionJets, uv ).xyz;
+    vec3 vel = texture2D( textureVelocityJets, uv ).xyz;
+
+    pos += vel * 0.016;
+
+    // Reset if too far
+    if (abs(pos.y) > 10.0) {
+      float pole = sign(pos.y);
+      pos.y = pole * 2.0;
+      vel.y = pole * 0.02;
+    }
+
+    gl_FragColor = vec4( pos, 1.0 );
+  }
+`;
+
+const jetVelocityComputeShader = `
+  uniform float time;
+  uniform float acceleration;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D( texturePositionJets, uv ).xyz;
+    vec3 vel = texture2D( textureVelocityJets, uv ).xyz;
+
+    // Accelerate vertically
+    float pole = sign(pos.y);
+    vel.y += pole * acceleration;
+
+    gl_FragColor = vec4( vel, 0.0 );
+  }
+`;
+
 function seededRandom(seed: number): number {
   const x = Math.sin(seed) * 10000
   return x - Math.floor(x)
 }
 
-function createStarField(): THREE.Points {
-  const positions = new Float32Array(maxStars * 3)
-  const colors = new Float32Array(maxStars * 3)
+function createStarField(): THREE.LOD {
+  const lod = new THREE.LOD();
 
-  // Initialize with base stars
-  for (let i = 0; i < currentStarCount; i++) {
-    const seed = seededRandom(i * 1000)
-    const distance = 50 + seed * 200 // Initial distance range
-    const theta = Math.acos(2 * seededRandom(i * 2000) - 1)
-    const phi = seededRandom(i * 3000) * Math.PI * 2
+  // Low LOD: 1500 stars, dimmer, smaller size (for dist > 100)
+  const lowPositions = new Float32Array(1500 * 3);
+  const lowColors = new Float32Array(1500 * 3);
+  for (let i = 0; i < 1500; i++) {
+    const seed = seededRandom(i * 1000);
+    const distance = 50 + seed * 200;
+    const theta = Math.acos(2 * seededRandom(i * 2000) - 1);
+    const phi = seededRandom(i * 3000) * Math.PI * 2;
 
-    const x = distance * Math.sin(theta) * Math.cos(phi)
-    const y = distance * Math.sin(theta) * Math.sin(phi)
-    const z = distance * Math.cos(theta)
+    const x = distance * Math.sin(theta) * Math.cos(phi);
+    const y = distance * Math.sin(theta) * Math.sin(phi);
+    const z = distance * Math.cos(theta);
 
-    positions[i * 3] = x
-    positions[i * 3 + 1] = y
-    positions[i * 3 + 2] = z
+    lowPositions[i * 3] = x;
+    lowPositions[i * 3 + 1] = y;
+    lowPositions[i * 3 + 2] = z;
 
-    // Brightness varies with simulated magnitude
-    const brightness = 0.2 + Math.pow(seededRandom(i * 4000), 2) * 0.8
-    colors[i * 3] = brightness
-    colors[i * 3 + 1] = brightness
-    colors[i * 3 + 2] = brightness
+    const brightness = 0.1 + Math.pow(seededRandom(i * 4000), 2) * 0.4; // Dimmer
+    lowColors[i * 3] = brightness;
+    lowColors[i * 3 + 1] = brightness;
+    lowColors[i * 3 + 2] = brightness;
   }
+  const lowGeometry = new THREE.BufferGeometry();
+  lowGeometry.setAttribute('position', new THREE.BufferAttribute(lowPositions, 3));
+  lowGeometry.setAttribute('color', new THREE.BufferAttribute(lowColors, 3));
+  const lowMaterial = new THREE.PointsMaterial({
+    vertexColors: true,
+    size: 1.0, // Smaller
+    transparent: true,
+    opacity: 0.8,
+    blending: THREE.AdditiveBlending
+  });
+  const lowPoints = new THREE.Points(lowGeometry, lowMaterial);
+  lod.addLevel(lowPoints, 100); // Visible beyond 100 units
 
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  // Medium LOD: 4000 stars (for dist > 50)
+  const medPositions = new Float32Array(4000 * 3);
+  const medColors = new Float32Array(4000 * 3);
+  for (let i = 0; i < 4000; i++) {
+    const seed = seededRandom(i * 1000);
+    const distance = 50 + seed * 150;
+    const theta = Math.acos(2 * seededRandom(i * 2000) - 1);
+    const phi = seededRandom(i * 3000) * Math.PI * 2;
 
-  const material = new THREE.PointsMaterial({
+    const x = distance * Math.sin(theta) * Math.cos(phi);
+    const y = distance * Math.sin(theta) * Math.sin(phi);
+    const z = distance * Math.cos(theta);
+
+    medPositions[i * 3] = x;
+    medPositions[i * 3 + 1] = y;
+    medPositions[i * 3 + 2] = z;
+
+    const brightness = 0.15 + Math.pow(seededRandom(i * 4000), 2) * 0.6;
+    medColors[i * 3] = brightness;
+    medColors[i * 3 + 1] = brightness;
+    medColors[i * 3 + 2] = brightness;
+  }
+  const medGeometry = new THREE.BufferGeometry();
+  medGeometry.setAttribute('position', new THREE.BufferAttribute(medPositions, 3));
+  medGeometry.setAttribute('color', new THREE.BufferAttribute(medColors, 3));
+  const medMaterial = new THREE.PointsMaterial({
+    vertexColors: true,
+    size: 1.5,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending
+  });
+  const medPoints = new THREE.Points(medGeometry, medMaterial);
+  lod.addLevel(medPoints, 50); // Visible beyond 50 units
+
+  // High LOD: 8000 stars, full detail (close-up)
+  const highPositions = new Float32Array(maxStars * 3);
+  const highColors = new Float32Array(maxStars * 3);
+  for (let i = 0; i < maxStars; i++) {
+    const seed = seededRandom(i * 1000);
+    const distance = 50 + seed * 200;
+    const theta = Math.acos(2 * seededRandom(i * 2000) - 1);
+    const phi = seededRandom(i * 3000) * Math.PI * 2;
+
+    const x = distance * Math.sin(theta) * Math.cos(phi);
+    const y = distance * Math.sin(theta) * Math.sin(phi);
+    const z = distance * Math.cos(theta);
+
+    highPositions[i * 3] = x;
+    highPositions[i * 3 + 1] = y;
+    highPositions[i * 3 + 2] = z;
+
+    const distanceFactor = Math.max(0.1, 1.0 - Math.log10(distance + 1) * 0.1);
+    const brightness = 0.2 + Math.pow(seededRandom(i * 4000), 2) * 0.8 * distanceFactor;
+    highColors[i * 3] = brightness;
+    highColors[i * 3 + 1] = brightness;
+    highColors[i * 3 + 2] = brightness;
+  }
+  const highGeometry = new THREE.BufferGeometry();
+  highGeometry.setAttribute('position', new THREE.BufferAttribute(highPositions, 3));
+  highGeometry.setAttribute('color', new THREE.BufferAttribute(highColors, 3));
+  const highMaterial = new THREE.PointsMaterial({
     vertexColors: true,
     size: 2.0,
     transparent: true,
     opacity: 1.0,
     blending: THREE.AdditiveBlending
-  })
+  });
+  const highPoints = new THREE.Points(highGeometry, highMaterial);
+  lod.addLevel(highPoints, 0); // Always for close range
 
-  const points = new THREE.Points(geometry, material)
-  return points
+  currentStarCount = 1500; // Start with low
+  return lod;
 }
 
 function updateStarField(): void {
-  if (!starField) return
-
-  const cameraDistance = camera.position.length()
-  const distanceChange = Math.abs(cameraDistance - lastCameraDistance)
+  if (!starField) return;
 
   // Add rotation to star field for subtle motion
-  starFieldRotation += rotationSpeed
-  starField.rotation.y = starFieldRotation
+  starFieldRotation += rotationSpeed;
+  starField.rotation.y = starFieldRotation;
 
-  // Expand star field when camera moves significantly or zooms out
-  if (distanceChange > 20 || cameraDistance > lastCameraDistance + 100) {
-    const starsNeeded = Math.min(
-      maxStars,
-      Math.floor(currentStarCount + (cameraDistance - lastCameraDistance) * 2)
-    )
+  // Update LOD based on camera distance to center
+  const distToCenter = camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
+  (starField as THREE.LOD).update(camera);
 
-    if (starsNeeded > currentStarCount) {
-      const geometry = starField.geometry
-      const positions = geometry.attributes.position.array as Float32Array
-      const colors = geometry.attributes.color.array as Float32Array
-
-      // Add stars progressively (max 50 per frame) to prevent frame drops
-      const starsToAdd = Math.min(50, starsNeeded - currentStarCount)
-      const newStarCount = currentStarCount + starsToAdd
-
-      // Add new stars at greater distances
-      for (let i = currentStarCount; i < newStarCount; i++) {
-        // Generate stars progressively farther out
-        const baseDistance = 50 + (i - 3000) * 10 // Scale distance with star count
-        const seed = seededRandom(i * 1000)
-        const distance = baseDistance + seed * Math.max(100, cameraDistance)
-        const theta = Math.acos(2 * seededRandom(i * 2000) - 1)
-        const phi = seededRandom(i * 3000) * Math.PI * 2
-
-        const x = distance * Math.sin(theta) * Math.cos(phi)
-        const y = distance * Math.sin(theta) * Math.sin(phi)
-        const z = distance * Math.cos(theta)
-
-        positions[i * 3] = x
-        positions[i * 3 + 1] = y
-        positions[i * 3 + 2] = z
-
-        // Fainter stars at greater distances
-        const distanceFactor = Math.max(0.1, 1.0 - Math.log10(distance + 1) * 0.1)
-        const brightness = 0.1 + Math.pow(seededRandom(i * 4000), 2) * 0.9 * distanceFactor
-        colors[i * 3] = brightness
-        colors[i * 3 + 1] = brightness
-        colors[i * 3 + 2] = brightness
-      }
-
-      geometry.attributes.position.needsUpdate = true
-      geometry.attributes.color.needsUpdate = true
-      geometry.setDrawRange(0, newStarCount)
-      currentStarCount = newStarCount
-
-      // Don't update lastCameraDistance yet - continue adding stars if needed
-      if (newStarCount >= starsNeeded) {
-        lastCameraDistance = cameraDistance
-      }
-    } else {
-      lastCameraDistance = cameraDistance
-    }
+  // Optional: Adjust currentStarCount for logging or future expansion, but LOD handles visibility
+  const cameraDistance = camera.position.length();
+  if (cameraDistance > lastCameraDistance + 100) {
+    currentStarCount = Math.min(maxStars, currentStarCount + (cameraDistance - lastCameraDistance) * 2);
+    lastCameraDistance = cameraDistance;
   }
 }
 
@@ -456,6 +695,11 @@ function init(): void {
     antialias: window.devicePixelRatio <= 1
   })
 
+  const isWebGL2 = renderer.capabilities.isWebGL2;
+  if (!isWebGL2) {
+    console.warn('WebGL2 not supported; falling back to CPU physics for particles');
+  }
+
   // Mobile-responsive sizing
   const updateSize = () => {
     const width = window.innerWidth
@@ -479,8 +723,62 @@ function init(): void {
   const renderPass = new RenderPass(scene, camera)
   composer.addPass(renderPass)
 
+  // Gravitational lensing pass (enhanced ray-marched)
+  const lensingShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+      rs: { value: 1.4 }, // Schwarzschild radius
+      center: { value: new THREE.Vector2(0.5, 0.5) },
+      cameraPosition: { value: new THREE.Vector3() } // For 3D ray casting
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform vec2 resolution;
+      uniform float rs;
+      uniform vec2 center;
+      uniform vec3 cameraPosition;
+      varying vec2 vUv;
+
+      void main() {
+        vec2 uv = vUv;
+        vec2 screenCenter = center * resolution;
+        vec2 rayDir2D = (uv * resolution - screenCenter) / resolution.y; // Normalized direction
+        vec3 rayDir = normalize(vec3(rayDir2D, -1.0)); // Assume forward z
+        vec3 rayPos = cameraPosition;
+
+        // Simple ray-march for bending (8 steps)
+        float stepSize = 0.1;
+        vec3 bentRay = rayDir;
+        for (int i = 0; i < 8; i++) {
+          vec3 toBH = vec3(center * resolution - gl_FragCoord.xy, 0.0) / resolution.y;
+          float b = length(cross(bentRay, toBH)); // Impact parameter
+          float deflection = 1.5 * rs / b; // Approx deflection angle
+          bentRay = normalize(bentRay + deflection * normalize(toBH));
+          rayPos += bentRay * stepSize;
+        }
+
+        // Sample at bent position (project back to UV)
+        vec2 lensedUV = uv + rayDir2D * (1.0 + 0.5 * rs / length(rayDir2D + 0.01));
+        lensedUV = clamp(lensedUV, 0.0, 1.0);
+
+        vec4 color = texture2D(tDiffuse, lensedUV);
+        gl_FragColor = color;
+      }
+    `
+  };
+  const lensingPass = new ShaderPass(lensingShader);
+  composer.addPass(lensingPass);
+
   const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerWidth),
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
     0.8, // strength (reduced for better core visibility)
     0.3, // radius (tighter for less core washing)
     0.92 // threshold (higher to preserve core darkness)
@@ -555,71 +853,102 @@ function init(): void {
 }
 
 function animateDiskPhysics(): void {
-  const positions = accretionDisk.geometry.attributes.position
-  const velocities = accretionDisk.geometry.attributes.velocity
+  if (isWebGL2 && gpuComputeDisk) {
+    const time = performance.now() * 0.001;
+    positionVariableDisk.material.uniforms['time'].value = time;
+    velocityVariableDisk.material.uniforms['time'].value = time;
 
-  for (let i = 0; i < positions.count; i++) {
-    const x = positions.getX(i)
-    const z = positions.getZ(i)
+    gpuComputeDisk.compute();
+    gpuComputeDisk.doRenderTargetReadout(positionVariableDisk.texture);
 
-    const distance = Math.sqrt(x * x + z * z)
-    const gravityStrength = 0.0001 / (distance * distance) // Inverse square law approximation
-
-    // Gravitational acceleration towards center
-    const accelX = -gravityStrength * (x / distance)
-    const accelZ = -gravityStrength * (z / distance)
-
-    // Update velocity
-    velocities.setX(i, velocities.getX(i) + accelX)
-    velocities.setZ(i, velocities.getZ(i) + accelZ)
-
-    // Update position
-    positions.setX(i, x + velocities.getX(i))
-    positions.setZ(i, z + velocities.getZ(i))
-
-    // Add turbulence
-    positions.setY(i, positions.getY(i) + (Math.random() - 0.5) * 0.005)
-    positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.002)
-    positions.setZ(i, positions.getZ(i) + (Math.random() - 0.5) * 0.002)
-
-    // Reset particles that fall into the black hole or go too far
-    if (distance < 1.5 || distance > 7) {
-      const angle = Math.random() * Math.PI * 2
-      const radius = 2.5 + Math.random() * 2 // respawn between 2.5 and 4.5
-      positions.setX(i, Math.cos(angle) * radius)
-      positions.setZ(i, Math.sin(angle) * radius)
-      positions.setY(i, (Math.random() - 0.5) * 0.3)
-      velocities.setX(i, -Math.sin(angle) * 0.01)
-      velocities.setZ(i, Math.cos(angle) * 0.01)
-      velocities.setY(i, 0)
+    // Update geometry from position texture
+    const posArray = positionVariableDisk.texture.image.data as Float32Array;
+    const positions = accretionDisk.geometry.attributes.position.array as Float32Array;
+    const particleCount = 2000;
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 4;
+      positions[i * 3] = posArray[idx];
+      positions[i * 3 + 1] = posArray[idx + 1];
+      positions[i * 3 + 2] = posArray[idx + 2];
     }
-  }
+    accretionDisk.geometry.attributes.position.needsUpdate = true;
+  } else if (!isWebGL2) {
+    // Fallback CPU physics (position-only, approximate)
+    const positions = accretionDisk.geometry.attributes.position;
+    const particleCount = 2000;
+    for (let i = 0; i < particleCount; i++) {
+      const x = positions.getX(i);
+      const z = positions.getZ(i);
+      const y = positions.getY(i);
 
-  positions.needsUpdate = true
-  velocities.needsUpdate = true
+      const distance = Math.sqrt(x * x + z * z);
+      if (distance > 0) {
+        const gravityStrength = 0.0001 / (distance * distance);
+        const accelX = -gravityStrength * (x / distance) * 0.016;
+        const accelZ = -gravityStrength * (z / distance) * 0.016;
+
+        // Approximate velocity integration (Euler)
+        positions.setX(i, x + accelX);
+        positions.setZ(i, z + accelZ);
+      }
+
+      // Turbulence
+      positions.setY(i, y + (Math.random() - 0.5) * 0.005);
+      positions.setX(i, positions.getX(i) + (Math.random() - 0.5) * 0.002);
+      positions.setZ(i, positions.getZ(i) + (Math.random() - 0.5) * 0.002);
+
+      // Reset
+      const distance = Math.sqrt(positions.getX(i) * positions.getX(i) + positions.getZ(i) * positions.getZ(i));
+      if (distance < 1.5 || distance > 7) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 2.5 + Math.random() * 2;
+        positions.setX(i, Math.cos(angle) * radius);
+        positions.setZ(i, Math.sin(angle) * radius);
+        positions.setY(i, (Math.random() - 0.5) * 0.3);
+      }
+    }
+    positions.needsUpdate = true;
+  }
 }
 
 function animateJetPhysics(): void {
-  const positions = jetStreams.geometry.attributes.position
-  const velocities = jetStreams.geometry.attributes.velocity
+  if (isWebGL2 && gpuComputeJets) {
+    const time = performance.now() * 0.001;
+    positionVariableJets.material.uniforms['time'].value = time;
+    velocityVariableJets.material.uniforms['time'].value = time;
 
-  for (let i = 0; i < positions.count; i++) {
-    const y = positions.getY(i)
-    const pole = y > 0 ? 1 : -1
+    gpuComputeJets.compute();
+    gpuComputeJets.doRenderTargetReadout(positionVariableJets.texture);
 
-    // Move upwards/downwards with acceleration
-    velocities.setY(i, velocities.getY(i) + pole * 0.001)
-    positions.setY(i, y + velocities.getY(i))
-
-    // Reset if too far
-    if (Math.abs(y) > 10) {
-      positions.setY(i, pole * 2)
-      velocities.setY(i, pole * 0.02)
+    // Update geometry
+    const posArray = positionVariableJets.texture.image.data as Float32Array;
+    const positions = jetStreams.geometry.attributes.position.array as Float32Array;
+    const particleCount = 1000;
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 4;
+      positions[i * 3] = posArray[idx];
+      positions[i * 3 + 1] = posArray[idx + 1];
+      positions[i * 3 + 2] = posArray[idx + 2];
     }
-  }
+    jetStreams.geometry.attributes.position.needsUpdate = true;
+  } else if (!isWebGL2) {
+    // Fallback CPU physics (position-only)
+    const positions = jetStreams.geometry.attributes.position;
+    const particleCount = 1000;
+    for (let i = 0; i < particleCount; i++) {
+      let y = positions.getY(i);
+      const pole = y > 0 ? 1 : -1;
 
-  positions.needsUpdate = true
-  velocities.needsUpdate = true
+      // Approximate acceleration
+      y += pole * 0.001 * 0.016; // dt
+
+      if (Math.abs(y) > 10) {
+        y = pole * 2;
+      }
+      positions.setY(i, y);
+    }
+    positions.needsUpdate = true;
+  }
 }
 
 function animate(): void {
@@ -632,14 +961,24 @@ function animate(): void {
   const material = accretionDisk.material as THREE.ShaderMaterial
   material.uniforms.time.value = performance.now() * 0.001
   material.uniforms.cameraPosition.value.copy(camera.position)
+
+  // Update lensing camera position
+  lensingPass.uniforms.cameraPosition.value.copy(camera.position);
+
   composer.render()
 }
 
 function onWindowResize(): void {
-  camera.aspect = window.innerWidth / window.innerHeight
-  camera.updateProjectionMatrix()
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  composer.setSize(window.innerWidth, window.innerHeight)
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+  composer.setSize(width, height);
+
+  // Update lensing and bloom resolution
+  lensingPass.uniforms.resolution.value.set(width, height);
+  bloomPass.resolution.set(width, height);
 }
 
 init()
