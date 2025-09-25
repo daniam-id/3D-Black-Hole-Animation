@@ -19,9 +19,7 @@ The animation is optimized for both desktop and mobile devices, with touch-frien
 
 ## Screenshots
 
-*(Placeholder: Add screenshots here showing the black hole from different angles, accretion disk glow, and jet streams. For a live demo, serve the project and capture the canvas.)*
-
-Example: ![Black Hole Animation](screenshots/blackhole_overview.png)
+![Black Hole Animation](Screenshot From 2025-09-25 19-54-51.png)
 
 ## Installation
 
