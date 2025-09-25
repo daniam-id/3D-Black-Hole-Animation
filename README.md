@@ -2,7 +2,7 @@
 
 Real-time interactive 3D animation of a stylized black hole using Three.js and TypeScript. Features an event horizon, accretion disk, relativistic jets, and starfield with gravitational lensing effects.
 
-![Black Hole Animation](Screenshot From 2025-09-25 19-54-51.png)
+![Black Hole Animation](Screenshot%20From%202025-09-25%2019-54-51.png)
 
 ## Installation
 
